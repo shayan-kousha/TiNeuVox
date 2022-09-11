@@ -42,7 +42,7 @@ def config_parser():
     parser.add_argument("--eval_psnr", action='store_true')
 
     # logging/saving options
-    parser.add_argument("--i_print",   type=int, default=2000,
+    parser.add_argument("--i_print",   type=int, default=500,
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--fre_test", type=int, default=30000,
                         help='frequency of test')

@@ -86,7 +86,7 @@ def load_dnerf_data(basedir, half_res=True, testskip=1):
         skip = testskip
             
         for t, frame in enumerate(meta['frames'][::skip]):
-            fname = os.path.join(basedir, frame['file_path'] + '.png')
+            fname = os.path.join(basedir, frame['file_path'] + '.jpg')
             imgs.append(imageio.imread(fname))
             poses.append(np.array(frame['transform_matrix']))
             cur_time = frame['time'] if 'time' in frame else float(t) / (len(meta['frames'][::skip])-1)
@@ -127,7 +127,7 @@ def load_dnerf_data(basedir, half_res=True, testskip=1):
         H = H//2
         W = W//2
         focal = focal/2.
-        imgs_half_res = np.zeros((imgs.shape[0], H, W, 4))
+        imgs_half_res = np.zeros((imgs.shape[0], H, W, imgs.shape[-1]))
         for i, img in enumerate(imgs):
             imgs_half_res[i] = cv2.resize(img, (W,H), interpolation=cv2.INTER_AREA)
         imgs = imgs_half_res
