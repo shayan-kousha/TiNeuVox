@@ -285,25 +285,33 @@ class TiNeuVox(torch.nn.Module):
         step_id = step_id[mask_inbbox]
         return ray_pts, ray_id, step_id,mask_inbbox
 
-    def forward(self, rays_o, rays_d, viewdirs,times_sel, cam_sel=None,bg_points_sel=None,global_step=None, **render_kwargs):
+    def forward(self, rays_o, rays_d, viewdirs,times_sel, cam_sel=None,bg_points_sel=None,global_step=None, ray_pts=None, **render_kwargs):
         '''Volume rendering
         @rays_o:   [N, 3] the starting point of the N shooting rays.
         @rays_d:   [N, 3] the shooting direction of the N rays.
         @viewdirs: [N, 3] viewing direction to compute positional embedding for MLP.
         '''
-        assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
+        ignore_masks = False
+        if ray_pts is not None:
+            ray_pts = ray_pts.contiguous()
+            N = len(ray_pts)
+            ray_id = torch.arange(ray_pts.shape[0]).to(ray_pts.device)
+            step_id = torch.arange(ray_pts.shape[0]).to(ray_pts.device)
+            ignore_masks = True
+        else:
+            assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
+            N = len(rays_o)
+            # sample points on rays
+            ray_pts, ray_id, step_id, mask_inbbox= self.sample_ray(
+                    rays_o=rays_o, rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
 
         ret_dict = {}
-        N = len(rays_o)
         times_emb = poc_fre(times_sel, self.time_poc)
         viewdirs_emb = poc_fre(viewdirs, self.view_poc)
         times_feature = self.timenet(times_emb)
         if self.add_cam==True:
             cam_emb= poc_fre(cam_sel, self.time_poc)
             cams_feature=self.camnet(cam_emb)
-        # sample points on rays
-        ray_pts, ray_id, step_id, mask_inbbox= self.sample_ray(
-                rays_o=rays_o, rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
 
         # pts deformation 
         rays_pts_emb = poc_fre(ray_pts, self.pos_poc)
@@ -323,7 +331,7 @@ class TiNeuVox(torch.nn.Module):
 
         alpha = nn.Softplus()(density_result+self.act_shift)
         alpha=alpha.squeeze(-1)
-        if self.fast_color_thres > 0:
+        if self.fast_color_thres > 0 and not ignore_masks:
             mask = (alpha > self.fast_color_thres)
             ray_id = ray_id[mask]
             step_id = step_id[mask]
@@ -332,7 +340,7 @@ class TiNeuVox(torch.nn.Module):
 
         # compute accumulated transmittance
         weights, alphainv_last = Alphas2Weights.apply(alpha, ray_id, N)
-        if self.fast_color_thres > 0:
+        if self.fast_color_thres > 0 and not ignore_masks:
             mask = (weights > self.fast_color_thres)
             weights = weights[mask]
             alpha = alpha[mask]
@@ -350,7 +358,7 @@ class TiNeuVox(torch.nn.Module):
         rgb_marched = segment_coo(
                 src=(weights.unsqueeze(-1) * rgb),
                 index=ray_id,
-                out=torch.zeros([N, 3]),
+                out=torch.zeros([N, 3]).to(rgb.device),
                 reduce='sum')
         rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
         ret_dict.update({
@@ -360,13 +368,14 @@ class TiNeuVox(torch.nn.Module):
             'raw_alpha': alpha,
             'raw_rgb': rgb,
             'ray_id': ray_id,
+            'density_result': density_result,
         })
 
         with torch.no_grad():
             depth = segment_coo(
                     src=(weights * step_id),
                     index=ray_id,
-                    out=torch.zeros([N]),
+                    out=torch.zeros([N]).to(weights.device),
                     reduce='sum')
         ret_dict.update({'depth': depth})
         return ret_dict
