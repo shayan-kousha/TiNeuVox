@@ -1,5 +1,6 @@
 import json
 import os
+from tqdm import tqdm
 
 import cv2
 import imageio
@@ -68,7 +69,8 @@ def pose_spherical(theta, phi, radius):
 
 
 def load_dnerf_data(basedir, half_res=True, testskip=1):
-    splits = ['train', 'val', 'test']
+    # splits = ['train', 'val', 'test']
+    splits = ['train']
     metas = {}
     for s in splits:
         with open(os.path.join(basedir, 'transforms_{}.json'.format(s)), 'r') as fp:
@@ -77,16 +79,19 @@ def load_dnerf_data(basedir, half_res=True, testskip=1):
     all_imgs = []
     all_poses = []
     all_times = []
-    counts = [0]
-    for s in splits:
+    counts = [0, 0, 0, 0]
+    for i, s in enumerate(splits):
         meta = metas[s]
         imgs = []
         poses = []
         times = []
         skip = testskip
             
-        for t, frame in enumerate(meta['frames'][::skip]):
-            fname = os.path.join(basedir, frame['file_path'] + '.jpg')
+        for t, frame in enumerate(tqdm(meta['frames'][::skip])):
+            if frame['file_path'].split('.')[-1] in ['jpg', 'png']:
+                fname = os.path.join(basedir, frame['file_path'])
+            else:
+                fname = os.path.join(basedir, frame['file_path'] + '.jpg')
             imgs.append(imageio.imread(fname))
             poses.append(np.array(frame['transform_matrix']))
             cur_time = frame['time'] if 'time' in frame else float(t) / (len(meta['frames'][::skip])-1)
@@ -97,7 +102,7 @@ def load_dnerf_data(basedir, half_res=True, testskip=1):
         imgs = (np.array(imgs) / 255.).astype(np.float32)  # keep all 4 channels (RGBA)
         poses = np.array(poses).astype(np.float32)
         times = np.array(times).astype(np.float32)
-        counts.append(counts[-1] + imgs.shape[0])
+        counts[i+1] = counts[-1] + imgs.shape[0]
         all_imgs.append(imgs)
         all_poses.append(poses)
         all_times.append(times)
@@ -109,8 +114,8 @@ def load_dnerf_data(basedir, half_res=True, testskip=1):
     times = np.concatenate(all_times, 0)
     
     H, W = imgs[0].shape[:2]
-    camera_angle_x = float(meta['camera_angle_x'])
-    focal = .5 * W / np.tan(.5 * camera_angle_x)
+    fl_x = float(meta['fl_x'])
+    fl_y = float(meta['fl_y'])
 
     if os.path.exists(os.path.join(basedir, 'transforms_{}.json'.format('render'))):
         with open(os.path.join(basedir, 'transforms_{}.json'.format('render')), 'r') as fp:
@@ -126,12 +131,13 @@ def load_dnerf_data(basedir, half_res=True, testskip=1):
     if half_res:
         H = H//2
         W = W//2
-        focal = focal/2.
+        fl_x = fl_x/2.
+        fl_y = fl_y/2.
         imgs_half_res = np.zeros((imgs.shape[0], H, W, imgs.shape[-1]))
         for i, img in enumerate(imgs):
             imgs_half_res[i] = cv2.resize(img, (W,H), interpolation=cv2.INTER_AREA)
         imgs = imgs_half_res
 
-    return imgs, poses, times, render_poses, render_times, [H, W, focal], i_split
+    return imgs, poses, times, render_poses, render_times, [H, W, fl_x, fl_y], i_split
 
 
