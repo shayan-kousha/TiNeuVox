@@ -25,8 +25,8 @@ def load_data(args):
         images, poses, times, render_poses, render_times, hwf, i_split = load_dnerf_data(args.datadir, args.half_res, args.testskip)
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
-        near = 2.
-        far = 6.
+        near = 0.
+        far = 10000.
         if images.shape[-1] == 4:
             if args.white_bkgd:
                 images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])

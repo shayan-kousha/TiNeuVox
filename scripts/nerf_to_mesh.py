@@ -6,7 +6,7 @@ import mmcv
 
 from tqdm import tqdm
 import sys
-sys.path.insert(1, '/mnt/ssd1/shayan/repos/TiNeuVox')
+sys.path.insert(1, './')
 from lib import tineuvox, utils
 
 from importlib import import_module
@@ -140,7 +140,6 @@ def extract_geometry(model, device, args, **kwargs):
 
     # Extracting iso-surface triangulated
     results = measure.marching_cubes(density, iso_value)
-    import ipdb;ipdb.set_trace()
 
     # Use contiguous tensors
     vertices, triangles, normals, _ = [torch.from_numpy(np.ascontiguousarray(result)) for result in results]
@@ -291,7 +290,6 @@ def export_marching_cubes(model, args, cfg, device, **kwargs):
         ray_origins = targets - args.view_disparity * directions
 
         print("Started ray-casting")
-        import ipdb;ipdb.set_trace()
         batch_generator = batchify(ray_origins, directions, batch_size=args.batch_size, device=device)
         for (ray_origins, ray_directions) in batch_generator:
             # # View dependent diffuse batch queried
@@ -373,7 +371,7 @@ if __name__ == "__main__":
         help="Iso-level value for triangulation",
     )
     parser.add_argument(
-        "--limit", type=float, default=1.2,
+        "--limit", type=float, default=1.,
         help="Limits in -xyz to xyz for marching cubes 3D grid.",
     )
     parser.add_argument(

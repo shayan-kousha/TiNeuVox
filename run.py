@@ -140,6 +140,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_vgg = []
 
     for i, c2w in enumerate(tqdm(render_poses)):
+        # if i % 20 != 0:
+        #     continue
 
         H, W = HW[i]
         K = Ks[i]
@@ -534,7 +536,9 @@ def train(args, cfg, data_dict=None):
     cfg.dump(os.path.join(cfg.basedir, cfg.expname, 'config.py'))
 
     # coarse geometry searching
-    if cfg.data.dataset_type == 'hyper_dataset':
+    if cfg.data.dataset_type in ['dnerf']:
+        xyz_min, xyz_max = torch.tensor([-1., -1., -1.]), torch.tensor([1., 1., 1.])
+    elif cfg.data.dataset_type == 'hyper_dataset':
         xyz_min, xyz_max = compute_bbox_by_cam_frustrm_hyper(args = args, cfg = cfg,data_class = data_dict['data_class'])
     else:
         xyz_min, xyz_max = compute_bbox_by_cam_frustrm(args = args, cfg = cfg, **data_dict)
