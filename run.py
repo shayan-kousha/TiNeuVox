@@ -140,8 +140,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_vgg = []
 
     for i, c2w in enumerate(tqdm(render_poses)):
-        # if i % 20 != 0:
-        #     continue
+        if i % 20 != 0:
+            continue
 
         H, W = HW[i]
         K = Ks[i]

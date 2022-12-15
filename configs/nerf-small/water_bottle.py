@@ -1,7 +1,7 @@
 import os
 _base_ = './default.py'
 
-expname = 'small/dnerf_water_bottle_new_data_new_xyz'
+expname = 'small/dnerf_water_bottle_new_data_new_xyz_3'
 basedir = './logs/nerf_synthetic'
 
 data = dict(
@@ -17,4 +17,5 @@ train_config = dict(
 model_and_render = dict(
     num_voxels=100**3,
     num_voxels_base=100**3,
+    world_bound_scale=2.05,
 )

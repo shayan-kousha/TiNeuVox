@@ -113,6 +113,11 @@ def load_dnerf_data(basedir, half_res=True, testskip=1):
     poses = np.concatenate(all_poses, 0)
     times = np.concatenate(all_times, 0)
     
+    center = poses[:, :3, 3].mean(0)
+    poses[:, :3, 3] -= center
+    scale = np.absolute(poses[:, :3, 3]).max()
+    poses[:, :3, 3] /= scale
+
     H, W = imgs[0].shape[:2]
     fl_x = float(meta['fl_x'])
     fl_y = float(meta['fl_y'])
