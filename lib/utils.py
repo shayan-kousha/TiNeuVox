@@ -463,7 +463,7 @@ def load_model(model_class, ckpt_path):
     ckpt = torch.load(ckpt_path)
     model = model_class(**ckpt['model_kwargs'])
     model.load_state_dict(ckpt['model_state_dict'])
-    return model
+    return model, ckpt['global_step']
 
 
 ''' Evaluation metrics (ssim, lpips)
