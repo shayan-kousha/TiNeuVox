@@ -173,7 +173,7 @@ class TiNeuVox(torch.nn.Module):
         # Determine grid resolution
         self.num_voxels = num_voxels
         self.voxel_size = ((self.xyz_max - self.xyz_min).prod() / num_voxels).pow(1/3)
-        self.world_size = ((self.xyz_max - self.xyz_min) / self.voxel_size).long()
+        self.world_size = torch.round((self.xyz_max - self.xyz_min) / self.voxel_size).long()
         self.voxel_size_ratio = self.voxel_size / self.voxel_size_base
         print('TiNeuVox: voxel_size      ', self.voxel_size)
         print('TiNeuVox: world_size      ', self.world_size)
@@ -199,6 +199,7 @@ class TiNeuVox(torch.nn.Module):
             'timebase_pe':self.timebase_pe,
             'gridbase_pe':self.gridbase_pe,
             'add_cam': self.add_cam,
+            'representation_type': self.representation_type,
         }
 
 
@@ -351,6 +352,7 @@ class TiNeuVox(torch.nn.Module):
             ray_id = torch.arange(ray_pts.shape[0]).to(ray_pts.device)
             step_id = torch.arange(ray_pts.shape[0]).to(ray_pts.device)
             ignore_masks = True
+            stepdist = render_kwargs['stepdist']
         else:
             assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
             N = len(rays_o)
