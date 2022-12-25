@@ -42,7 +42,7 @@ def config_parser():
     parser.add_argument("--eval_psnr", action='store_true')
 
     # logging/saving options
-    parser.add_argument("--i_print",   type=int, default=2000,
+    parser.add_argument("--i_print",   type=int, default=500,
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--fre_test", type=int, default=30000,
                         help='frequency of test')
@@ -122,7 +122,7 @@ def render_viewpoints_hyper(model, data_class, ndc, render_kwargs, test=True,
 @torch.no_grad()
 def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
                       gt_imgs=None, savedir=None, test_times=None, render_factor=0, eval_psnr=False,
-                      eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False,):
+                      eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False, global_step=None):
     '''Render images for the given viewpoints; run evaluation if gt given.
     '''
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
@@ -140,6 +140,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     lpips_vgg = []
 
     for i, c2w in enumerate(tqdm(render_poses)):
+        if i % 20 != 0:
+            continue
 
         H, W = HW[i]
         K = Ks[i]
@@ -151,6 +153,10 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
         viewdirs = viewdirs.flatten(0,-2)
         time_one = test_times[i]*torch.ones_like(rays_o[:,0:1])
         bacth_size=1000
+
+        if model.representation_type == 'sdf':
+            model.sdf_alpha_inter_ratio = get_sdf_alpha_ratio(global_step)
+
         render_result_chunks = [
             {k: v for k, v in model(ro, rd, vd,ts, **render_kwargs).items() if k in keys}
             for ro, rd, vd ,ts in zip(rays_o.split(bacth_size, 0), rays_d.split(bacth_size, 0), viewdirs.split(bacth_size, 0),time_one.split(bacth_size, 0))
@@ -195,6 +201,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     depths = np.array(depths)
     return rgbs, depths
 
+def get_sdf_alpha_ratio(global_step):
+    return np.min([1.0, (global_step - 0) / (25000 - 0)])
 
 def seed_everything():
     '''Seed everything for better reproducibility.
@@ -441,6 +449,8 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
             times_sel = times_sel.to(device)
 
         # volume rendering
+        if cfg_model.representation_type == 'sdf':
+            model.sdf_alpha_inter_ratio = get_sdf_alpha_ratio(global_step)
         render_result = model(rays_o, rays_d, viewdirs, times_sel, global_step=global_step, **render_kwargs)
 
         # gradient descent step
@@ -484,6 +494,7 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
         if global_step%(args.fre_test) == 0:
             render_viewpoints_kwargs = {
+                'global_step': global_step,
                 'model': model,
                 'ndc': cfg.data.ndc,
                 'render_kwargs': {
@@ -534,7 +545,9 @@ def train(args, cfg, data_dict=None):
     cfg.dump(os.path.join(cfg.basedir, cfg.expname, 'config.py'))
 
     # coarse geometry searching
-    if cfg.data.dataset_type == 'hyper_dataset':
+    if cfg.data.dataset_type in ['dnerf']:
+        xyz_min, xyz_max = torch.tensor([-1., -1., -1.]), torch.tensor([1., 1., 1.])
+    elif cfg.data.dataset_type == 'hyper_dataset':
         xyz_min, xyz_max = compute_bbox_by_cam_frustrm_hyper(args = args, cfg = cfg,data_class = data_dict['data_class'])
     else:
         xyz_min, xyz_max = compute_bbox_by_cam_frustrm(args = args, cfg = cfg, **data_dict)
@@ -580,11 +593,13 @@ if __name__=='__main__':
             ckpt_path = os.path.join(cfg.basedir, cfg.expname, 'fine_last.tar')
         ckpt_name = ckpt_path.split('/')[-1][:-4]
         model_class = tineuvox.TiNeuVox
-        model = utils.load_model(model_class, ckpt_path).to(device)
+        model, start = utils.load_model(model_class, ckpt_path)
+        model.to(device)
         near=data_dict['near']
         far=data_dict['far']
         stepsize = cfg.model_and_render.stepsize
         render_viewpoints_kwargs = {
+            'global_step': start,
             'model': model,
             'ndc': cfg.data.ndc,
             'render_kwargs': {

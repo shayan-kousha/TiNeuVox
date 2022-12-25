@@ -91,9 +91,11 @@ class TiNeuVox(torch.nn.Module):
                  alpha_init=None, fast_color_thres=0,
                  voxel_dim=0, defor_depth=3, net_width=128,
                  posbase_pe=10, viewbase_pe=4, timebase_pe=8, gridbase_pe=2,
+                 representation_type='sdf',
                  **kwargs):
         
         super(TiNeuVox, self).__init__()
+        self.representation_type = representation_type
         self.add_cam = add_cam
         self.voxel_dim = voxel_dim
         self.defor_depth = defor_depth
@@ -163,12 +165,15 @@ class TiNeuVox(torch.nn.Module):
         print('TiNeuVox: featurenet mlp', self.featurenet)
         print('TiNeuVox: rgbnet mlp', self.rgbnet)
 
+        if representation_type == 'sdf':
+            self.sdf_alpha_inter_ratio = None
+            self.register_parameter('variance', nn.Parameter(torch.tensor(0.2)))
 
     def _set_grid_resolution(self, num_voxels):
         # Determine grid resolution
         self.num_voxels = num_voxels
         self.voxel_size = ((self.xyz_max - self.xyz_min).prod() / num_voxels).pow(1/3)
-        self.world_size = ((self.xyz_max - self.xyz_min) / self.voxel_size).long()
+        self.world_size = torch.round((self.xyz_max - self.xyz_min) / self.voxel_size).long()
         self.voxel_size_ratio = self.voxel_size / self.voxel_size_base
         print('TiNeuVox: voxel_size      ', self.voxel_size)
         print('TiNeuVox: world_size      ', self.world_size)
@@ -194,6 +199,7 @@ class TiNeuVox(torch.nn.Module):
             'timebase_pe':self.timebase_pe,
             'gridbase_pe':self.gridbase_pe,
             'add_cam': self.add_cam,
+            'representation_type': self.representation_type,
         }
 
 
@@ -262,6 +268,54 @@ class TiNeuVox(torch.nn.Module):
         hit[ray_id[mask_inbbox]] = 1
         return hit.reshape(shape)
 
+    def activate_density(self, density_result, interval):
+        return 1-torch.exp(-interval* nn.Softplus()(density_result+self.act_shift))
+
+    def activate_sdf(self, sdf_pts, ray_pts, stepdist, rays_dir=None, times_feature=None, rays_pts_emb=None):
+        inv_variance = torch.exp(self.variance)
+
+        with torch.enable_grad():
+            sdf_grads = self.get_sdf_grad(ray_pts, times_feature, rays_pts_emb)
+
+        true_dot_val = (rays_dir * sdf_grads).sum(-1, keepdim=True)  # * calculate
+
+        iter_cos = -(F.relu(-true_dot_val * 0.5 + 0.5) * (1.0 - self.sdf_alpha_inter_ratio) + F.relu(
+            -true_dot_val) * self.sdf_alpha_inter_ratio)  # always non-positive
+
+        true_estimate_sdf_half_next = sdf_pts + iter_cos.clip(-10.0, 10.0).squeeze() * stepdist * 0.5
+        true_estimate_sdf_half_prev = sdf_pts - iter_cos.clip(-10.0, 10.0).squeeze() * stepdist * 0.5
+
+        prev_cdf = torch.sigmoid(true_estimate_sdf_half_prev * inv_variance)
+        next_cdf = torch.sigmoid(true_estimate_sdf_half_next * inv_variance)
+
+        p = prev_cdf - next_cdf
+        c = prev_cdf
+
+        alpha_sdf = ((p + 1e-5) / (c + 1e-5)).clip(0.0, 1.0)
+
+        return alpha_sdf, sdf_grads
+
+    def get_sdf_grad(self, x, times_feature, rays_pts_emb):
+        x.requires_grad_(True)
+
+
+        vox_feature_flatten = self.mult_dist_interp(x)
+        
+        vox_feature_flatten_emb = poc_fre(vox_feature_flatten, self.grid_poc)
+        h_feature = self.featurenet(torch.cat((vox_feature_flatten_emb, rays_pts_emb, times_feature), -1))
+        sdf = self.densitynet(h_feature).squeeze(-1)
+
+        d_output = torch.ones_like(sdf, requires_grad=False, device=sdf.device)
+
+        sdf_grads = torch.autograd.grad(
+            outputs=sdf,
+            inputs=x,
+            grad_outputs=d_output,
+            # create_graph=True,
+            # retain_graph=True,
+            only_inputs=True)[0]
+        return sdf_grads
+
     def sample_ray(self, rays_o, rays_d, near, far, stepsize, is_train=False, **render_kwargs):
         '''Sample query points on rays.
         All the output points are sorted from near to far.
@@ -283,27 +337,38 @@ class TiNeuVox(torch.nn.Module):
         ray_pts = ray_pts[mask_inbbox]
         ray_id = ray_id[mask_inbbox]
         step_id = step_id[mask_inbbox]
-        return ray_pts, ray_id, step_id,mask_inbbox
+        return ray_pts, ray_id, step_id, mask_inbbox, stepdist
 
-    def forward(self, rays_o, rays_d, viewdirs,times_sel, cam_sel=None,bg_points_sel=None,global_step=None, **render_kwargs):
+    def forward(self, rays_o, rays_d, viewdirs,times_sel, cam_sel=None,bg_points_sel=None,global_step=None, ray_pts=None, **render_kwargs):
         '''Volume rendering
         @rays_o:   [N, 3] the starting point of the N shooting rays.
         @rays_d:   [N, 3] the shooting direction of the N rays.
         @viewdirs: [N, 3] viewing direction to compute positional embedding for MLP.
         '''
-        assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
+        ignore_masks = False
+        if ray_pts is not None:
+            ray_pts = ray_pts.contiguous()
+            N = len(ray_pts)
+            ray_id = torch.arange(ray_pts.shape[0]).to(ray_pts.device)
+            step_id = torch.arange(ray_pts.shape[0]).to(ray_pts.device)
+            ignore_masks = True
+            stepdist = render_kwargs['stepdist']
+        else:
+            assert len(rays_o.shape)==2 and rays_o.shape[-1]==3, 'Only suuport point queries in [N, 3] format'
+            N = len(rays_o)
+            # sample points on rays
+            ray_pts, ray_id, step_id, mask_inbbox, stepdist = self.sample_ray(
+                    rays_o=rays_o, rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
+
+        interval = render_kwargs['stepsize']
 
         ret_dict = {}
-        N = len(rays_o)
         times_emb = poc_fre(times_sel, self.time_poc)
         viewdirs_emb = poc_fre(viewdirs, self.view_poc)
         times_feature = self.timenet(times_emb)
         if self.add_cam==True:
             cam_emb= poc_fre(cam_sel, self.time_poc)
             cams_feature=self.camnet(cam_emb)
-        # sample points on rays
-        ray_pts, ray_id, step_id, mask_inbbox= self.sample_ray(
-                rays_o=rays_o, rays_d=rays_d, is_train=global_step is not None, **render_kwargs)
 
         # pts deformation 
         rays_pts_emb = poc_fre(ray_pts, self.pos_poc)
@@ -321,9 +386,21 @@ class TiNeuVox(torch.nn.Module):
         h_feature = self.featurenet(torch.cat((vox_feature_flatten_emb, rays_pts_emb, times_feature), -1))
         density_result = self.densitynet(h_feature)
 
-        alpha = nn.Softplus()(density_result+self.act_shift)
-        alpha=alpha.squeeze(-1)
-        if self.fast_color_thres > 0:
+        if self.representation_type == 'density':
+            alpha = self.activate_density(density_result, interval)
+            alpha = alpha.squeeze(-1)
+        elif self.representation_type == 'sdf':
+            alpha, sdf_grads = self.activate_sdf(
+                density_result.squeeze(-1),
+                ray_pts_delta,
+                stepdist,
+                rays_dir=(rays_d/rays_d.norm(dim=1).unsqueeze(1))[ray_id],
+                times_feature=times_feature,
+                rays_pts_emb=rays_pts_emb)
+        else:
+            raise NotImplementedError
+
+        if self.fast_color_thres > 0 and not ignore_masks:
             mask = (alpha > self.fast_color_thres)
             ray_id = ray_id[mask]
             step_id = step_id[mask]
@@ -332,7 +409,7 @@ class TiNeuVox(torch.nn.Module):
 
         # compute accumulated transmittance
         weights, alphainv_last = Alphas2Weights.apply(alpha, ray_id, N)
-        if self.fast_color_thres > 0:
+        if self.fast_color_thres > 0 and not ignore_masks:
             mask = (weights > self.fast_color_thres)
             weights = weights[mask]
             alpha = alpha[mask]
@@ -350,7 +427,7 @@ class TiNeuVox(torch.nn.Module):
         rgb_marched = segment_coo(
                 src=(weights.unsqueeze(-1) * rgb),
                 index=ray_id,
-                out=torch.zeros([N, 3]),
+                out=torch.zeros([N, 3]).to(rgb.device),
                 reduce='sum')
         rgb_marched += (alphainv_last.unsqueeze(-1) * render_kwargs['bg'])
         ret_dict.update({
@@ -360,13 +437,14 @@ class TiNeuVox(torch.nn.Module):
             'raw_alpha': alpha,
             'raw_rgb': rgb,
             'ray_id': ray_id,
+            'density_result': density_result,
         })
 
         with torch.no_grad():
             depth = segment_coo(
                     src=(weights * step_id),
                     index=ray_id,
-                    out=torch.zeros([N]),
+                    out=torch.zeros([N]).to(weights.device),
                     reduce='sum')
         ret_dict.update({'depth': depth})
         return ret_dict

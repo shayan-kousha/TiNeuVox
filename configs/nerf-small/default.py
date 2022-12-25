@@ -33,7 +33,8 @@ train_config = dict(
     lrate_timenet=8e-4,
     lrate_rgbnet=8e-4,           # lr of the mlp to preduct view-dependent color
     lrate_decay=20,               # lr decay by 0.1 after every lrate_decay*1000 steps
-    ray_sampler='in_maskcache',        # ray sampling strategies
+    lrate_variance=0.001,
+    ray_sampler='random',        # ray sampling strategies
     weight_main=1.0,              # weight of photometric loss
     weight_entropy_last=0.001,
     weight_rgbper=0.01,            # weight of per-point rgb loss
@@ -59,6 +60,7 @@ model_and_render = dict(
     fast_color_thres=1e-4,           # threshold of alpha value to skip the fine stage sampled point
     stepsize=0.5,                 # sampling stepsize in volume rendering
     world_bound_scale=1.05,
+    representation_type='density'
 )
 
 

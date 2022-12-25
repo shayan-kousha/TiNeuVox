@@ -25,8 +25,8 @@ def load_data(args):
         images, poses, times, render_poses, render_times, hwf, i_split = load_dnerf_data(args.datadir, args.half_res, args.testskip)
         print('Loaded blender', images.shape, render_poses.shape, hwf, args.datadir)
         i_train, i_val, i_test = i_split
-        near = 2.
-        far = 6.
+        near = 0.
+        far = 10000.
         if images.shape[-1] == 4:
             if args.white_bkgd:
                 images = images[...,:3]*images[...,-1:] + (1.-images[...,-1:])
@@ -36,16 +36,16 @@ def load_data(args):
         raise NotImplementedError(f'Unknown dataset type {args.dataset_type} exiting')
 
     # Cast intrinsics to right types
-    H, W, focal = hwf
+    H, W, fl_x, fl_y = hwf
     H, W = int(H), int(W)
-    hwf = [H, W, focal]
+    hwf = [H, W, fl_x, fl_y]
     HW = np.array([im.shape[:2] for im in images])
     irregular_shape = (images.dtype is np.dtype('object'))
 
     if K is None:
         K = np.array([
-            [focal, 0, 0.5*W],
-            [0, focal, 0.5*H],
+            [fl_x, 0, 0.5*W],
+            [0, fl_y, 0.5*H],
             [0, 0, 1]
         ])
 
